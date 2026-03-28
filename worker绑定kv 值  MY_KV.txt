@@ -1,0 +1,1 @@
+创建个kv空间，名字自取，worker绑定kv 值  MY_KV

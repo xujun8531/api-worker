@@ -1,0 +1,120 @@
+// --- 核心安全配置 ---
+const ADMIN_PASSWORD = "888888";   //管理密码
+const ADMIN_PATH = "/admin";               //管理页面路径
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const userToken = url.searchParams.get("token");
+
+    // 获取白名单函数
+    const getWhiteList = async () => {
+      const list = await env.MY_KV.get("WHITE_LIST") || "";
+      return list.split(",").map(t => t.trim()).filter(t => t !== "");
+    };
+
+    // 1. API 接口：上传优选 IP (增加白名单校验)
+    if (request.method === "POST" && url.pathname === "/update-ip") {
+      try {
+        const { password, ips, action } = await request.json();
+        if (password !== ADMIN_PASSWORD) return new Response("密码错误", { status: 403 });
+        
+        const whiteList = await getWhiteList();
+        if (!userToken || !whiteList.includes(userToken)) {
+          return new Response("禁止访问：该 Token 未在管理员白名单中", { status: 403 });
+        }
+
+        const userKey = `BEST_IPS_${userToken}`;
+        let finalIps = ips; 
+        if (action === "append") {
+          let old = JSON.parse(await env.MY_KV.get(userKey) || "[]");
+          finalIps = [...new Set([...old, ...ips])];
+        }
+        await env.MY_KV.put(userKey, JSON.stringify(finalIps));
+        await env.MY_KV.put(`LAST_UPDATE_${userToken}`, new Date().toLocaleString());
+        return new Response(`OK! [${userToken}] 同步成功`);
+      } catch (e) { return new Response("Error", { status: 500 }); }
+    }
+
+    // 2. 后台管理：由管理员管理【母版】和【用户白名单】
+    if (url.pathname === ADMIN_PATH) {
+      if (request.method === "POST") {
+        const formData = await request.formData();
+        if (formData.get("password") !== ADMIN_PASSWORD) return new Response("验证失败", { status: 401 });
+        
+        // 加载数据
+        if (url.searchParams.has("get_data")) {
+          const tpl = await env.MY_KV.get("NODE_TEMPLATES") || "";
+          const wl = await env.MY_KV.get("WHITE_LIST") || "";
+          return new Response(JSON.stringify({ tpl, wl }), { headers: { "Content-Type": "application/json" } });
+        }
+        
+        // 保存数据
+        await env.MY_KV.put("NODE_TEMPLATES", formData.get("templates"));
+        await env.MY_KV.put("WHITE_LIST", formData.get("whitelist"));
+        return new Response("配置已保存！<a href='" + ADMIN_PATH + "'>返回</a>", { headers: { "Content-Type": "text/html;charset=utf-8" } });
+      }
+      return new Response(adminHTML(), { headers: { "Content-Type": "text/html;charset=utf-8" } });
+    }
+
+    // 3. 用户订阅：获取模板并套用 (增加白名单校验)
+    const whiteList = await getWhiteList();
+    if (!userToken || !whiteList.includes(userToken)) {
+      return new Response("403 Forbidden: 非授权用户", { status: 403 });
+    }
+
+    try {
+      const rawTemplates = await env.MY_KV.get("NODE_TEMPLATES") || "";
+      const storedIps = JSON.parse(await env.MY_KV.get(`BEST_IPS_${userToken}`) || "[]");
+      
+      if (!Array.isArray(storedIps) || storedIps.length === 0) {
+        return new Response(btoa(unescape(encodeURIComponent(rawTemplates))), { headers: { "Content-Type": "text/plain" } });
+      }
+
+      let finalNodes = [];
+      const lines = rawTemplates.split("\n").map(l => l.trim()).filter(l => l !== "");
+      for (let line of lines) {
+        for (let i = 0; i < storedIps.length; i++) {
+          let ip = storedIps[i];
+          let fIp = (ip.includes(":") && !ip.startsWith("[")) ? `[${ip}]` : ip;
+          if (line.startsWith("vless://") || line.startsWith("trojan://")) {
+            const atIdx = line.indexOf("@"), colIdx = line.indexOf(":", atIdx);
+            if (atIdx !== -1 && colIdx !== -1) {
+              let nNode = line.substring(0, atIdx + 1) + fIp + line.substring(colIdx);
+              const hIdx = nNode.indexOf("#");
+              if (hIdx !== -1) {
+                let base = nNode.substring(0, hIdx), name = decodeURIComponent(nNode.substring(hIdx + 1));
+                nNode = `${base}#${encodeURIComponent(name + "_" + (i + 1))}`;
+              }
+              finalNodes.push(nNode);
+            }
+          } else if (line.startsWith("vmess://")) {
+            try {
+              let b64 = line.replace("vmess://", ""), obj = JSON.parse(atob(b64.padEnd(b64.length + (4 - b64.length % 4) % 4, '=')));
+              obj.add = ip; obj.ps = (obj.ps || "VMess") + "_" + (i + 1);
+              finalNodes.push("vmess://" + btoa(unescape(encodeURIComponent(JSON.stringify(obj)))));
+            } catch (e) { if (i === 0) finalNodes.push(line); }
+          }
+        }
+      }
+      return new Response(btoa(unescape(encodeURIComponent(finalNodes.join("\n")))), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    } catch (e) { return new Response("Error", { status: 500 }); }
+  }
+};
+
+function adminHTML() {
+  return `<!DOCTYPE html><html><head><title>系统后台</title><meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>body{font-family:sans-serif;padding:20px;max-width:900px;margin:auto;background:#f0f2f5;} .card{background:#fff;padding:25px;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.08);margin-bottom:20px;} textarea{width:100%;height:200px;margin-top:10px;border:1px solid #ddd;padding:10px;border-radius:4px;font-family:monospace;} .btn{background:#007bff;color:#fff;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;}</style>
+  <script>async function loadData(){const p=document.getElementById('pwd').value;const fd=new FormData();fd.append('password',p);const r=await fetch('?get_data',{method:'POST',body:fd});if(r.ok){const data=await r.json();document.getElementById('tpl').value=data.tpl;document.getElementById('wl').value=data.wl;alert('加载成功');}else{alert('密码错误');}}</script>
+  </head><body><div class="card">
+  <h2>🛠️ 管理员控制台</h2>
+  管理密码: <input type="password" id="pwd"> <button onclick="loadData()" class="btn">🔓 加载当前配置</button>
+  <form method="POST">
+  <p><b>1. 授权用户 Token (用英文逗号隔开):</b></p>
+  <textarea id="wl" name="whitelist" placeholder="例如: user1,user2,jack"></textarea>
+  <p><b>2. 节点原始母版 (一行一个):</b></p>
+  <textarea id="tpl" name="templates" placeholder="粘贴 vless:// 或 vmess://"></textarea><br><br>
+  确认密码: <input type="password" name="password" required> 
+  <button type="submit" class="btn" style="background:#28a745;">💾 保存所有更改</button>
+  </form></div></body></html>`;
+}
