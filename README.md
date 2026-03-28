@@ -61,3 +61,5 @@ KV 报错：请确认 Worker 控制台里的 KV 绑定名称 确实是大写的 
 短链没出来：如果由于网络波动导致 suo.yt 访问失败，请直接复制屏幕输出的第 3 项（长链接）到 Clash 中。
 <img width="892" height="782" alt="image" src="https://github.com/user-attachments/assets/62479c23-8bf0-4e55-92a0-618a41467bf3" />
 
+<img width="1113" height="949" alt="image" src="https://github.com/user-attachments/assets/c599e951-f796-4c13-902c-c10e4a4e1668" />
+
